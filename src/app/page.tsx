@@ -19,6 +19,7 @@ const BOMB_CHANCE = 0.12;
 const TARGET_CANDLES = 29;
 const NAME_STORAGE_KEY = "alexbd-player-name";
 const NAME_CONFIRMED_KEY = "alexbd-name-confirmed";
+const EMAIL_STORAGE_KEY = "alexbd-player-email";
 
 type Candle = {
   id: string;
@@ -77,6 +78,9 @@ const CAKE_CANDLE_SPOTS = Array.from({ length: TARGET_CANDLES }, (_, index) => {
 const formatTimeMs = (value: number) => `${(value / 1000).toFixed(1)}s`;
 const cleanDisplayName = (value: string) =>
   value.trim().replace(/\s+/g, " ").slice(0, 40);
+const cleanEmail = (value: string) => value.trim().toLowerCase();
+const isValidEmail = (value: string) =>
+  /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 
 export default function Home() {
   const [candles, setCandles] = useState<Candle[]>([]);
@@ -95,6 +99,11 @@ export default function Home() {
   const [isNameModalOpen, setIsNameModalOpen] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
   const [nameModalError, setNameModalError] = useState("");
+  const [playerEmail, setPlayerEmail] = useState("");
+  const [hasConfirmedEmail, setHasConfirmedEmail] = useState(false);
+  const [isEmailModalOpen, setIsEmailModalOpen] = useState(false);
+  const [emailDraft, setEmailDraft] = useState("");
+  const [emailModalError, setEmailModalError] = useState("");
   const [highScores, setHighScores] = useState<ScoreEntry[]>([]);
   const [isLoadingScores, setIsLoadingScores] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -145,6 +154,7 @@ export default function Home() {
     if (typeof window === "undefined") return;
     const savedName = window.localStorage.getItem(NAME_STORAGE_KEY);
     const confirmed = window.localStorage.getItem(NAME_CONFIRMED_KEY) === "true";
+    const savedEmail = window.localStorage.getItem(EMAIL_STORAGE_KEY);
     if (savedName) {
       setPlayerName(savedName);
       setNameDraft(savedName);
@@ -153,6 +163,15 @@ export default function Home() {
       setNameDraft("");
     }
     setHasConfirmedName(Boolean(savedName) && confirmed);
+    if (savedEmail) {
+      setPlayerEmail(savedEmail);
+      setEmailDraft(savedEmail);
+      setHasConfirmedEmail(true);
+    } else {
+      setPlayerEmail("");
+      setEmailDraft("");
+      setHasConfirmedEmail(false);
+    }
   }, []);
 
   useEffect(() => {
@@ -162,6 +181,37 @@ export default function Home() {
       setIsNameModalOpen(true);
     }
   }, [hasConfirmedName, playerName, status]);
+
+  const finalTimeMs = useMemo(() => {
+    const fallbackTime = Math.max(0, (GAME_SECONDS - timeLeft) * 1000);
+    return Math.min(elapsedMs || fallbackTime, GAME_SECONDS * 1000);
+  }, [elapsedMs, timeLeft]);
+
+  const qualifiesForTopTen = useMemo(() => {
+    if (candlesPlaced <= 0) return false;
+    if (topScores.length < 10) return true;
+    const lastEntry = topScores[topScores.length - 1];
+    if (!lastEntry) return true;
+    if (candlesPlaced > lastEntry.candles) return true;
+    if (candlesPlaced === lastEntry.candles && finalTimeMs < lastEntry.timeMs) {
+      return true;
+    }
+    return false;
+  }, [candlesPlaced, finalTimeMs, topScores]);
+
+  const needsEmail =
+    status === "ended" &&
+    hasConfirmedName &&
+    qualifiesForTopTen &&
+    !hasConfirmedEmail &&
+    !hasSubmittedRound;
+
+  useEffect(() => {
+    if (!needsEmail || isEmailModalOpen) return;
+    setEmailDraft(playerEmail || "");
+    setEmailModalError("");
+    setIsEmailModalOpen(true);
+  }, [isEmailModalOpen, needsEmail, playerEmail]);
 
   const endGame = useCallback((reason: "time" | "bomb" | "candles") => {
     if (endGuardRef.current) return;
@@ -228,6 +278,12 @@ export default function Home() {
     setIsNameModalOpen(true);
   }, [playerName]);
 
+  const openEmailModal = useCallback(() => {
+    setEmailDraft(playerEmail || "");
+    setEmailModalError("");
+    setIsEmailModalOpen(true);
+  }, [playerEmail]);
+
   const triggerGoldFlash = useCallback(() => {
     setGoldFlash(true);
     if (goldFlashTimerRef.current) {
@@ -242,6 +298,12 @@ export default function Home() {
     if (!hasConfirmedName) return;
     setIsNameModalOpen(false);
     setNameModalError("");
+  };
+
+  const closeEmailModal = () => {
+    if (!hasConfirmedEmail) return;
+    setIsEmailModalOpen(false);
+    setEmailModalError("");
   };
 
   const confirmName = () => {
@@ -259,6 +321,22 @@ export default function Home() {
     }
     setIsNameModalOpen(false);
     setNameModalError("");
+  };
+
+  const confirmEmail = () => {
+    const cleaned = cleanEmail(emailDraft);
+    if (!cleaned || !isValidEmail(cleaned)) {
+      setEmailModalError("Please enter a valid email.");
+      return;
+    }
+    setPlayerEmail(cleaned);
+    setEmailDraft(cleaned);
+    setHasConfirmedEmail(true);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(EMAIL_STORAGE_KEY, cleaned);
+    }
+    setIsEmailModalOpen(false);
+    setEmailModalError("");
   };
 
   const startGame = () => {
@@ -340,14 +418,13 @@ export default function Home() {
   const submitScore = useCallback(
     async (source: "auto" | "manual" = "manual") => {
       if (!hasConfirmedName || !playerName.trim() || candlesPlaced <= 0) return;
+      if (qualifiesForTopTen && !hasConfirmedEmail) {
+        openEmailModal();
+        return;
+      }
       setIsSubmitting(true);
       setError("");
       setMessage("");
-      const fallbackTime = Math.max(0, (GAME_SECONDS - timeLeft) * 1000);
-      const finalTimeMs = Math.min(
-        elapsedMs || fallbackTime,
-        GAME_SECONDS * 1000,
-      );
       try {
         const response = await fetch("/api/scores", {
           method: "POST",
@@ -358,6 +435,7 @@ export default function Home() {
             name: cleanDisplayName(playerName),
             candles: candlesPlaced,
             timeMs: finalTimeMs,
+            email: hasConfirmedEmail ? cleanEmail(playerEmail) : undefined,
           }),
         });
         const data = (await response.json()) as {
@@ -384,7 +462,16 @@ export default function Home() {
         setIsSubmitting(false);
       }
     },
-    [candlesPlaced, elapsedMs, hasConfirmedName, playerName, timeLeft],
+    [
+      candlesPlaced,
+      finalTimeMs,
+      hasConfirmedEmail,
+      hasConfirmedName,
+      openEmailModal,
+      playerEmail,
+      playerName,
+      qualifiesForTopTen,
+    ],
   );
 
   useEffect(() => {
@@ -394,7 +481,8 @@ export default function Home() {
       candlesPlaced <= 0 ||
       hasSubmittedRound ||
       autoSubmitAttempted ||
-      isSubmitting
+      isSubmitting ||
+      needsEmail
     ) {
       return;
     }
@@ -406,6 +494,7 @@ export default function Home() {
     hasConfirmedName,
     hasSubmittedRound,
     isSubmitting,
+    needsEmail,
     status,
     submitScore,
   ]);
@@ -425,7 +514,8 @@ export default function Home() {
     candlesPlaced > 0 &&
     hasConfirmedName &&
     playerName.trim().length > 0 &&
-    !hasSubmittedRound;
+    !hasSubmittedRound &&
+    !needsEmail;
 
   return (
     <div
@@ -652,9 +742,11 @@ export default function Home() {
               <div className={styles.helper}>
                 {!hasConfirmedName
                   ? "Set your name to save a score."
-                  : status === "ended"
-                    ? "Save your candles and time to celebrate Alexander."
-                    : "Finish a round to unlock score saving."}
+                  : needsEmail
+                    ? "Top 10 scores need an email to submit."
+                    : status === "ended"
+                      ? "Save your candles and time to celebrate Alexander."
+                      : "Finish a round to unlock score saving."}
               </div>
               {message ? (
                 <div className={`${styles.message} ${styles.messageSuccess}`}>
@@ -724,6 +816,63 @@ export default function Home() {
                   className={styles.modalSecondary}
                   type="button"
                   onClick={closeNameModal}
+                >
+                  Cancel
+                </button>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {isEmailModalOpen ? (
+        <div
+          className={styles.modalBackdrop}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="email-modal-title"
+        >
+          <div className={styles.modalCard}>
+            <h3 id="email-modal-title" className={styles.modalTitle}>
+              Top 10 email
+            </h3>
+            <p className={styles.modalText}>
+              This score is Top 10 worthy. Add an email so we can reach you if
+              needed.
+            </p>
+            <input
+              className={styles.modalInput}
+              type="email"
+              maxLength={254}
+              value={emailDraft}
+              onChange={(event) => {
+                setEmailDraft(event.target.value);
+                setEmailModalError("");
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  confirmEmail();
+                }
+              }}
+              placeholder="you@example.com"
+              autoFocus
+            />
+            {emailModalError ? (
+              <div className={styles.modalError}>{emailModalError}</div>
+            ) : null}
+            <div className={styles.modalActions}>
+              <button
+                className={styles.modalPrimary}
+                type="button"
+                onClick={confirmEmail}
+              >
+                Save email
+              </button>
+              {hasConfirmedEmail ? (
+                <button
+                  className={styles.modalSecondary}
+                  type="button"
+                  onClick={closeEmailModal}
                 >
                   Cancel
                 </button>

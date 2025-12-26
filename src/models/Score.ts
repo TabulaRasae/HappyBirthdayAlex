@@ -6,6 +6,7 @@ export class Score extends Model {
   declare name: string;
   declare candles: number;
   declare timeMs: number;
+  declare email: string | null;
   declare createdAt: Date;
   declare updatedAt: Date;
 }
@@ -31,6 +32,10 @@ Score.init(
       type: DataTypes.INTEGER,
       allowNull: false,
       defaultValue: 0,
+    },
+    email: {
+      type: DataTypes.STRING(254),
+      allowNull: true,
     },
   },
   {
