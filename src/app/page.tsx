@@ -152,7 +152,7 @@ export default function Home() {
       setPlayerName("");
       setNameDraft("");
     }
-    setHasConfirmedName(confirmed);
+    setHasConfirmedName(Boolean(savedName) && confirmed);
   }, []);
 
   useEffect(() => {
