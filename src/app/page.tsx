@@ -90,10 +90,10 @@ export default function Home() {
   );
   const [isRunning, setIsRunning] = useState(false);
   const [lastPopAt, setLastPopAt] = useState<number | null>(null);
-  const [playerName, setPlayerName] = useState("Alexander");
+  const [playerName, setPlayerName] = useState("");
   const [hasConfirmedName, setHasConfirmedName] = useState(false);
   const [isNameModalOpen, setIsNameModalOpen] = useState(false);
-  const [nameDraft, setNameDraft] = useState("Alexander");
+  const [nameDraft, setNameDraft] = useState("");
   const [nameModalError, setNameModalError] = useState("");
   const [highScores, setHighScores] = useState<ScoreEntry[]>([]);
   const [isLoadingScores, setIsLoadingScores] = useState(true);
@@ -102,10 +102,15 @@ export default function Home() {
   const [error, setError] = useState("");
   const startTimeRef = useRef<number | null>(null);
   const endGuardRef = useRef(false);
+  const [goldFlash, setGoldFlash] = useState(false);
+  const goldFlashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [hasSubmittedRound, setHasSubmittedRound] = useState(false);
+  const [autoSubmitAttempted, setAutoSubmitAttempted] = useState(false);
 
+  const topScores = useMemo(() => highScores.slice(0, 10), [highScores]);
   const bestEntry = useMemo(
-    () => (highScores.length > 0 ? highScores[0] : null),
-    [highScores],
+    () => (topScores.length > 0 ? topScores[0] : null),
+    [topScores],
   );
 
   const fetchScores = useCallback(async () => {
@@ -129,6 +134,14 @@ export default function Home() {
   }, [fetchScores]);
 
   useEffect(() => {
+    return () => {
+      if (goldFlashTimerRef.current) {
+        clearTimeout(goldFlashTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     if (typeof window === "undefined") return;
     const savedName = window.localStorage.getItem(NAME_STORAGE_KEY);
     const confirmed = window.localStorage.getItem(NAME_CONFIRMED_KEY) === "true";
@@ -136,15 +149,15 @@ export default function Home() {
       setPlayerName(savedName);
       setNameDraft(savedName);
     } else {
-      setPlayerName("Alexander");
-      setNameDraft("Alexander");
+      setPlayerName("");
+      setNameDraft("");
     }
     setHasConfirmedName(confirmed);
   }, []);
 
   useEffect(() => {
     if (status === "ended" && !hasConfirmedName) {
-      setNameDraft(playerName || "Alexander");
+      setNameDraft(playerName || "");
       setNameModalError("");
       setIsNameModalOpen(true);
     }
@@ -215,6 +228,16 @@ export default function Home() {
     setIsNameModalOpen(true);
   }, [playerName]);
 
+  const triggerGoldFlash = useCallback(() => {
+    setGoldFlash(true);
+    if (goldFlashTimerRef.current) {
+      clearTimeout(goldFlashTimerRef.current);
+    }
+    goldFlashTimerRef.current = setTimeout(() => {
+      setGoldFlash(false);
+    }, 450);
+  }, []);
+
   const closeNameModal = () => {
     if (!hasConfirmedName) return;
     setIsNameModalOpen(false);
@@ -243,6 +266,9 @@ export default function Home() {
     setCandlesPlaced(0);
     setElapsedMs(0);
     setCombo(0);
+    setGoldFlash(false);
+    setHasSubmittedRound(false);
+    setAutoSubmitAttempted(false);
     setTimeLeft(GAME_SECONDS);
     setStatus("running");
     setEndReason(null);
@@ -263,6 +289,9 @@ export default function Home() {
     setCandlesPlaced(0);
     setElapsedMs(0);
     setCombo(0);
+    setGoldFlash(false);
+    setHasSubmittedRound(false);
+    setAutoSubmitAttempted(false);
     startTimeRef.current = null;
     endGuardRef.current = false;
     setMessage("");
@@ -281,6 +310,10 @@ export default function Home() {
       setCombo(0);
       endGame("bomb");
       return;
+    }
+
+    if (candle.isGolden) {
+      triggerGoldFlash();
     }
 
     setCandles((prev) =>
@@ -304,47 +337,78 @@ export default function Home() {
     setCombo((prev) => Math.min(prev + 1, 8));
   };
 
-  const submitScore = async () => {
-    if (!hasConfirmedName || !playerName.trim() || candlesPlaced <= 0) return;
-    setIsSubmitting(true);
-    setError("");
-    setMessage("");
-    const fallbackTime = Math.max(0, (GAME_SECONDS - timeLeft) * 1000);
-    const finalTimeMs = Math.min(
-      elapsedMs || fallbackTime,
-      GAME_SECONDS * 1000,
-    );
-    try {
-      const response = await fetch("/api/scores", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          name: cleanDisplayName(playerName),
-          candles: candlesPlaced,
-          timeMs: finalTimeMs,
-        }),
-      });
-      const data = (await response.json()) as {
-        scores?: ScoreEntry[];
-        error?: string;
-      };
-      if (!response.ok) {
-        throw new Error(data.error ?? "Unable to submit score.");
-      }
-      setHighScores(Array.isArray(data.scores) ? data.scores : []);
-      setMessage("Score saved! The cake is officially legendary.");
-    } catch (submitError) {
-      setError(
-        submitError instanceof Error
-          ? submitError.message
-          : "Unable to submit score.",
+  const submitScore = useCallback(
+    async (source: "auto" | "manual" = "manual") => {
+      if (!hasConfirmedName || !playerName.trim() || candlesPlaced <= 0) return;
+      setIsSubmitting(true);
+      setError("");
+      setMessage("");
+      const fallbackTime = Math.max(0, (GAME_SECONDS - timeLeft) * 1000);
+      const finalTimeMs = Math.min(
+        elapsedMs || fallbackTime,
+        GAME_SECONDS * 1000,
       );
-    } finally {
-      setIsSubmitting(false);
+      try {
+        const response = await fetch("/api/scores", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            name: cleanDisplayName(playerName),
+            candles: candlesPlaced,
+            timeMs: finalTimeMs,
+          }),
+        });
+        const data = (await response.json()) as {
+          scores?: ScoreEntry[];
+          error?: string;
+        };
+        if (!response.ok) {
+          throw new Error(data.error ?? "Unable to submit score.");
+        }
+        setHighScores(Array.isArray(data.scores) ? data.scores : []);
+        setHasSubmittedRound(true);
+        setMessage(
+          source === "auto"
+            ? "Score saved automatically!"
+            : "Score saved! The cake is officially legendary.",
+        );
+      } catch (submitError) {
+        setError(
+          submitError instanceof Error
+            ? submitError.message
+            : "Unable to submit score.",
+        );
+      } finally {
+        setIsSubmitting(false);
+      }
+    },
+    [candlesPlaced, elapsedMs, hasConfirmedName, playerName, timeLeft],
+  );
+
+  useEffect(() => {
+    if (
+      status !== "ended" ||
+      !hasConfirmedName ||
+      candlesPlaced <= 0 ||
+      hasSubmittedRound ||
+      autoSubmitAttempted ||
+      isSubmitting
+    ) {
+      return;
     }
-  };
+    setAutoSubmitAttempted(true);
+    void submitScore("auto");
+  }, [
+    autoSubmitAttempted,
+    candlesPlaced,
+    hasConfirmedName,
+    hasSubmittedRound,
+    isSubmitting,
+    status,
+    submitScore,
+  ]);
 
   const statusLabel =
     status === "running"
@@ -360,67 +424,97 @@ export default function Home() {
     status === "ended" &&
     candlesPlaced > 0 &&
     hasConfirmedName &&
-    playerName.trim().length > 0;
+    playerName.trim().length > 0 &&
+    !hasSubmittedRound;
 
   return (
-    <div className={styles.page}>
-      <header className={styles.hero}>
-        <p className={styles.kicker}>Happy Birthday Alexander</p>
-        <h1 className={styles.title}>Candle Dash Celebration</h1>
-        <p className={styles.subtitle}>
-          Click the dancing candles to place them on Alexander&apos;s cake.
-          Reach 29 candles before the timer runs out. Golden candles just
-          sparkle extra bright.
-        </p>
-        <div className={styles.stats}>
-          <div className={styles.stat}>
-            <div className={styles.statLabel}>Time Left</div>
-            <div className={styles.statValue}>{timeLeft}s</div>
-          </div>
-          <div className={styles.stat}>
-            <div className={styles.statLabel}>Candles</div>
-            <div className={styles.statValue}>
-              {candlesPlaced}/{TARGET_CANDLES}
+    <div
+      className={`${styles.page} ${isRunning ? styles.pagePlaying : ""}`}
+    >
+      {!isRunning ? (
+        <header className={styles.hero}>
+          <p className={styles.kicker}>Happy Birthday Alexander</p>
+          <h1 className={styles.title}>Candle Dash Celebration</h1>
+          <p className={styles.subtitle}>
+            Click the dancing candles to place them on Alexander&apos;s cake.
+            Reach 29 candles before the timer runs out. Golden candles just
+            sparkle extra bright.
+          </p>
+          <div className={styles.stats}>
+            <div className={styles.stat}>
+              <div className={styles.statLabel}>Time Left</div>
+              <div className={styles.statValue}>{timeLeft}s</div>
+            </div>
+            <div className={styles.stat}>
+              <div className={styles.statLabel}>Candles</div>
+              <div className={styles.statValue}>
+                {candlesPlaced}/{TARGET_CANDLES}
+              </div>
+            </div>
+            <div className={styles.stat}>
+              <div className={styles.statLabel}>Streak</div>
+              <div className={styles.statValue}>{combo}x</div>
+            </div>
+            <div className={styles.stat}>
+              <div className={styles.statLabel}>Best Candles</div>
+              <div className={styles.statValue}>{bestEntry?.candles ?? 0}</div>
             </div>
           </div>
-          <div className={styles.stat}>
-            <div className={styles.statLabel}>Streak</div>
-            <div className={styles.statValue}>{combo}x</div>
+          <div className={styles.controls}>
+            <button
+              className={styles.primaryButton}
+              type="button"
+              onClick={startGame}
+              disabled={isRunning}
+            >
+              {status === "ended" ? "Play Again" : "Start the Party"}
+            </button>
+            <button
+              className={styles.secondaryButton}
+              type="button"
+              onClick={resetGame}
+            >
+              Reset
+            </button>
+            <span
+              className={`${styles.statusPill} ${
+                status === "running" ? styles.statusPillRunning : ""
+              }`}
+            >
+              {statusLabel}
+            </span>
           </div>
-          <div className={styles.stat}>
-            <div className={styles.statLabel}>Best Candles</div>
-            <div className={styles.statValue}>{bestEntry?.candles ?? 0}</div>
-          </div>
-        </div>
-        <div className={styles.controls}>
-          <button
-            className={styles.primaryButton}
-            type="button"
-            onClick={startGame}
-            disabled={isRunning}
-          >
-            {status === "ended" ? "Play Again" : "Start the Party"}
-          </button>
-          <button
-            className={styles.secondaryButton}
-            type="button"
-            onClick={resetGame}
-          >
-            Reset
-          </button>
-          <span
-            className={`${styles.statusPill} ${
-              status === "running" ? styles.statusPillRunning : ""
-            }`}
-          >
-            {statusLabel}
-          </span>
-        </div>
-      </header>
+        </header>
+      ) : null}
 
-      <main className={styles.main}>
-        <section className={styles.gameCard}>
-          <div className={styles.stage}>
+      <main className={`${styles.main} ${isRunning ? styles.mainPlaying : ""}`}>
+        <section
+          className={`${styles.gameCard} ${
+            isRunning ? styles.gameCardPlaying : ""
+          }`}
+        >
+          <div
+            className={`${styles.stage} ${isRunning ? styles.stagePlaying : ""}`}
+          >
+            {goldFlash ? <div className={styles.goldFlash} /> : null}
+            {isRunning ? (
+              <div className={styles.stageHud}>
+                <div className={styles.stageStat}>
+                  <span className={styles.stageLabel}>Time</span>
+                  <strong className={styles.stageValue}>{timeLeft}s</strong>
+                </div>
+                <div className={styles.stageStat}>
+                  <span className={styles.stageLabel}>Candles</span>
+                  <strong className={styles.stageValue}>
+                    {candlesPlaced}/{TARGET_CANDLES}
+                  </strong>
+                </div>
+                <div className={styles.stageStat}>
+                  <span className={styles.stageLabel}>Streak</span>
+                  <strong className={styles.stageValue}>{combo}x</strong>
+                </div>
+              </div>
+            ) : null}
             <div className={styles.cake}>
               <div className={styles.cakeCandles}>
                 {CAKE_CANDLE_SPOTS.slice(0, candlesPlaced).map((spot, index) => (
@@ -460,6 +554,12 @@ export default function Home() {
                   }
                   onClick={() => popCandle(candle)}
                 >
+                  {candle.isGolden && candle.state === "alive" ? (
+                    <span className={styles.sparkle} />
+                  ) : null}
+                  {candle.state === "blown" ? (
+                    <span className={styles.tapPop} />
+                  ) : null}
                   {candle.state === "blown" ? (
                     <span className={styles.blow} />
                   ) : null}
@@ -470,106 +570,112 @@ export default function Home() {
               ))}
             </div>
           </div>
-          <div className={styles.rules}>
-            <div className={styles.rule}>
-              <span className={styles.ruleDot} />
-              Every pop places a candle on the cake. Hit 29 to finish early.
+          {!isRunning ? (
+            <div className={styles.rules}>
+              <div className={styles.rule}>
+                <span className={styles.ruleDot} />
+                Every pop places a candle on the cake. Hit 29 to finish early.
+              </div>
+              <div className={styles.rule}>
+                <span className={`${styles.ruleDot} ${styles.ruleDotGold}`} />
+                Golden candles are bonus sparkle, not bonus points.
+              </div>
+              <div className={styles.rule}>
+                <span className={`${styles.ruleDot} ${styles.ruleDotBomb}`} />
+                Bombs end the round early, so dodge them.
+              </div>
+              <div className={styles.rule}>
+                <span className={styles.ruleDot} />
+                Keep a streak going to stay in the groove.
+              </div>
             </div>
-            <div className={styles.rule}>
-              <span className={`${styles.ruleDot} ${styles.ruleDotGold}`} />
-              Golden candles are bonus sparkle, not bonus points.
-            </div>
-            <div className={styles.rule}>
-              <span className={`${styles.ruleDot} ${styles.ruleDotBomb}`} />
-              Bombs end the round early, so dodge them.
-            </div>
-            <div className={styles.rule}>
-              <span className={styles.ruleDot} />
-              Keep a streak going to stay in the groove.
-            </div>
-          </div>
+          ) : null}
         </section>
 
-        <aside className={styles.scoreCard}>
-          <div className={styles.scoreHeader}>
-            <h2>High Scores</h2>
-            <span>
-              {candlesPlaced}/{TARGET_CANDLES} placed
-            </span>
-          </div>
-          {isLoadingScores ? (
-            <div className={styles.scoreEmpty}>Loading scoreboard...</div>
-          ) : highScores.length === 0 ? (
-            <div className={styles.scoreEmpty}>Be the first to light up the board.</div>
-          ) : (
-            <ol className={styles.scoreList}>
-              {highScores.map((entry, index) => (
-                <li key={entry.id} className={styles.scoreRow}>
-                  <div className={styles.scoreMeta}>
-                    <span className={styles.scoreRank}>#{index + 1}</span>
-                    <span className={styles.scoreName}>{entry.name}</span>
-                  </div>
-                  <div className={styles.scoreMeta}>
-                    <span className={styles.scoreValue}>
-                      {entry.candles ?? 0} candles
-                    </span>
-                    <span className={styles.scoreTime}>
-                      {formatTimeMs(entry.timeMs ?? 0)}
-                    </span>
-                  </div>
-                </li>
-              ))}
-            </ol>
-          )}
+        {!isRunning ? (
+          <aside className={styles.scoreCard}>
+            <div className={styles.scoreHeader}>
+              <h2>Top 10 Scores</h2>
+              <span>
+                {candlesPlaced}/{TARGET_CANDLES} placed
+              </span>
+            </div>
+            {isLoadingScores ? (
+              <div className={styles.scoreEmpty}>Loading scoreboard...</div>
+            ) : topScores.length === 0 ? (
+              <div className={styles.scoreEmpty}>Be the first to light up the board.</div>
+            ) : (
+              <ol className={styles.scoreList}>
+                {topScores.map((entry, index) => (
+                  <li key={entry.id} className={styles.scoreRow}>
+                    <div className={styles.scoreMeta}>
+                      <span className={styles.scoreRank}>#{index + 1}</span>
+                      <span className={styles.scoreName}>{entry.name}</span>
+                    </div>
+                    <div className={styles.scoreMeta}>
+                      <span className={styles.scoreValue}>
+                        {entry.candles ?? 0} candles
+                      </span>
+                      <span className={styles.scoreTime}>
+                        {formatTimeMs(entry.timeMs ?? 0)}
+                      </span>
+                    </div>
+                  </li>
+                ))}
+              </ol>
+            )}
 
-          <div className={styles.form}>
-            <div className={styles.nameRow}>
-              <div>
-                <div className={styles.nameLabel}>Submitting as</div>
-                <div className={styles.nameValue}>
-                  {hasConfirmedName ? playerName : "Set your name first"}
+            <div className={styles.form}>
+              <div className={styles.nameRow}>
+                <div>
+                  <div className={styles.nameLabel}>Submitting as</div>
+                  <div className={styles.nameValue}>
+                    {hasConfirmedName ? playerName : "No name yet"}
+                  </div>
                 </div>
+                <button
+                  className={styles.nameButton}
+                  type="button"
+                  onClick={openNameModal}
+                >
+                  {hasConfirmedName ? "Change name" : "Set name"}
+                </button>
               </div>
               <button
-                className={styles.nameButton}
+                className={styles.submitButton}
                 type="button"
-                onClick={openNameModal}
+                onClick={() => submitScore("manual")}
+                disabled={!canSubmit || isSubmitting}
               >
-                {hasConfirmedName ? "Change name" : "Set name"}
+                {isSubmitting ? "Saving..." : "Save Score"}
               </button>
-            </div>
-            <button
-              className={styles.submitButton}
-              type="button"
-              onClick={submitScore}
-              disabled={!canSubmit || isSubmitting}
-            >
-              {isSubmitting ? "Saving..." : "Save Score"}
-            </button>
-            <div className={styles.helper}>
-              {!hasConfirmedName
-                ? "Set your name to save a score."
-                : status === "ended"
-                  ? "Save your candles and time to celebrate Alexander."
-                  : "Finish a round to unlock score saving."}
-            </div>
-            {message ? (
-              <div className={`${styles.message} ${styles.messageSuccess}`}>
-                {message}
+              <div className={styles.helper}>
+                {!hasConfirmedName
+                  ? "Set your name to save a score."
+                  : status === "ended"
+                    ? "Save your candles and time to celebrate Alexander."
+                    : "Finish a round to unlock score saving."}
               </div>
-            ) : null}
-            {error ? (
-              <div className={`${styles.message} ${styles.messageError}`}>
-                {error}
-              </div>
-            ) : null}
-          </div>
-        </aside>
+              {message ? (
+                <div className={`${styles.message} ${styles.messageSuccess}`}>
+                  {message}
+                </div>
+              ) : null}
+              {error ? (
+                <div className={`${styles.message} ${styles.messageError}`}>
+                  {error}
+                </div>
+              ) : null}
+            </div>
+          </aside>
+        ) : null}
       </main>
 
-      <footer className={styles.footer}>
-        Built with confetti, cake, and birthday wishes for Alexander.
-      </footer>
+      {!isRunning ? (
+        <footer className={styles.footer}>
+          Built with confetti, cake, and birthday wishes for Alexander.
+        </footer>
+      ) : null}
 
       {isNameModalOpen ? (
         <div
